@@ -332,7 +332,7 @@ def summarize(req: SummaryRequest):
 
     try:
         response = _genai_client.models.generate_content(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash-lite",
     contents=(
         f"You are a senior software engineer doing a code review.\n"
         f"File: `{rel_path}`\n\n"
