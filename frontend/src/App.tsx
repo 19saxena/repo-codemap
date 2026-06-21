@@ -12,16 +12,26 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 
 import { GraphData, GraphNode as GNode, FileNodeData } from "./types";
-import { computeLayout, langColor, complexityColor } from "./utils/layout";
+import { computeLayout, langColor, complexityColor, folderColor } from "./utils/layout";
 import { CodeNode } from "./components/CodeNode";
+import { FolderGroup } from "./components/FolderGroup";
 import { SidePanel } from "./components/SidePanel";
 import { Toolbar } from "./components/Toolbar";
 import { EmptyState } from "./components/EmptyState";
 
-const nodeTypes = { codeNode: CodeNode };
+const nodeTypes = {
+  codeNode: CodeNode,
+  folderGroup: FolderGroup,
+};
+
+function labelToIndex(label: string): number {
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+  return hash % 8;
+}
 
 export default function App() {
-  const [nodes, setNodes, onNodesChange] = useNodesState<FileNodeData>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<{ id: string; data: FileNodeData } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,16 +61,30 @@ export default function App() {
         return;
       }
 
-      // Apply layout
-      const positioned = computeLayout(data.nodes, data.edges);
+      const { fileNodes, groupNodes } = computeLayout(data.nodes, data.edges);
 
-      // Convert to React Flow format
-      const rfNodes: Node<FileNodeData>[] = positioned.map((n: GNode) => ({
+      // Group nodes first (rendered behind file nodes)
+      const rfGroupNodes: Node[] = groupNodes.map((g) => ({
+        id: g.id,
+        type: "folderGroup",
+        position: g.position,
+        style: g.style,
+        data: g.data,
+        draggable: true,
+        selectable: false,
+        zIndex: 0,
+      }));
+
+      // File nodes — children of their group
+      const rfFileNodes: Node<FileNodeData>[] = fileNodes.map((n: GNode) => ({
         id: n.id,
         type: "codeNode",
         position: n.position,
         data: n.data,
-        selected: false,
+        // @ts-ignore
+        parentNode: n.parentNode,
+        extent: "parent",
+        zIndex: 10,
       }));
 
       const rfEdges: Edge[] = data.edges.map((e) => ({
@@ -69,10 +93,11 @@ export default function App() {
         target: e.target,
         type: "smoothstep",
         animated: false,
+        zIndex: 20,
         style: { stroke: "#4a9eff60", strokeWidth: 1.5 },
       }));
 
-      setNodes(rfNodes);
+      setNodes([...rfGroupNodes, ...rfFileNodes]);
       setEdges(rfEdges);
       setMeta(data.meta);
     } catch (e: unknown) {
@@ -83,9 +108,10 @@ export default function App() {
   }, [setNodes, setEdges]);
 
   const handleNodeClick = useCallback(
-    (_: React.MouseEvent, node: Node<FileNodeData>) => {
-      setSelectedNode({ id: node.id, data: node.data });
-      // Highlight edges connected to this node
+    (_: React.MouseEvent, node: Node) => {
+      if (node.type !== "codeNode") return;
+      const fileData = node.data as FileNodeData;
+      setSelectedNode({ id: node.id, data: fileData });
       setEdges((eds) =>
         eds.map((e) => ({
           ...e,
@@ -93,10 +119,10 @@ export default function App() {
           style: {
             stroke:
               e.source === node.id
-                ? langColor(node.data.language)
+                ? langColor(fileData.language)
                 : e.target === node.id
                 ? "#39d0d8"
-                : "#4a9eff30",
+                : "#4a9eff20",
             strokeWidth: e.source === node.id || e.target === node.id ? 2 : 1,
           },
         }))
@@ -120,12 +146,7 @@ export default function App() {
 
   return (
     <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column" }}>
-      <Toolbar
-        onAnalyze={handleAnalyze}
-        loading={loading}
-        error={error}
-        meta={meta}
-      />
+      <Toolbar onAnalyze={handleAnalyze} loading={loading} error={error} meta={meta} />
 
       <div
         style={{
@@ -147,25 +168,19 @@ export default function App() {
           onPaneClick={handlePaneClick}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
+          fitViewOptions={{ padding: 0.12 }}
           minZoom={0.05}
           maxZoom={3}
-          defaultEdgeOptions={{
-            type: "smoothstep",
-            style: { stroke: "#4a9eff60", strokeWidth: 1.5 },
-          }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={24}
-            size={1}
-            color="#21262d"
-          />
+          <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#21262d" />
           <Controls position="bottom-left" />
           <MiniMap
             position="bottom-right"
-            nodeColor={(n: Node<FileNodeData>) => {
+            nodeColor={(n: Node) => {
+              if (n.type === "folderGroup") {
+                return folderColor(labelToIndex(n.data?.label ?? ""));
+              }
               const d = n.data as FileNodeData;
               return d ? langColor(d.language) : "#484f58";
             }}
@@ -175,7 +190,6 @@ export default function App() {
           />
         </ReactFlow>
 
-        {/* Complexity legend */}
         {nodes.length > 0 && (
           <div
             style={{
@@ -203,15 +217,7 @@ export default function App() {
               { label: "Critical (>30)", c: 40 },
             ].map(({ label, c }) => (
               <div key={label} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "3px" }}>
-                <div
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    borderRadius: "50%",
-                    background: complexityColor(c),
-                    flexShrink: 0,
-                  }}
-                />
+                <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: complexityColor(c), flexShrink: 0 }} />
                 <span>{label}</span>
               </div>
             ))}

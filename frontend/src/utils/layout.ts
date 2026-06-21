@@ -1,19 +1,35 @@
 import { GraphNode, GraphEdge } from "../types";
 
+const NODE_W = 220;
+const NODE_H = 110;
+const COL_GAP = 100;
+const ROW_GAP = 24;
+const GROUP_PADDING_X = 24;
+const GROUP_PADDING_TOP = 44; // space for folder label
+const GROUP_PADDING_BOTTOM = 24;
+const CANVAS_PADDING = 60;
+
+export interface LayoutResult {
+  fileNodes: GraphNode[];
+  groupNodes: GroupNode[];
+}
+
+export interface GroupNode {
+  id: string;
+  type: "folderGroup";
+  position: { x: number; y: number };
+  style: { width: number; height: number };
+  data: { label: string; fileCount: number };
+  draggable: boolean;
+}
+
 /**
- * Automatic layout: groups nodes by folder, arranges in a grid.
- * Each folder is a column, files are rows within that column.
+ * Layout: one column per folder, files stacked vertically inside a group box.
  */
 export function computeLayout(
   nodes: GraphNode[],
   _edges: GraphEdge[]
-): GraphNode[] {
-  const NODE_W = 220;
-  const NODE_H = 110;
-  const COL_GAP = 80;
-  const ROW_GAP = 24;
-  const PADDING = 60;
-
+): LayoutResult {
   // Group nodes by folder
   const folders = new Map<string, GraphNode[]>();
   for (const node of nodes) {
@@ -22,35 +38,52 @@ export function computeLayout(
     folders.get(folder)!.push(node);
   }
 
-  // Sort folders alphabetically, root first
+  // Sort folders: root first, then alphabetically
   const sortedFolders = Array.from(folders.keys()).sort((a, b) => {
     if (a === ".") return -1;
     if (b === ".") return 1;
     return a.localeCompare(b);
   });
 
-  const positioned: GraphNode[] = [];
-  let colX = PADDING;
+  const fileNodes: GraphNode[] = [];
+  const groupNodes: GroupNode[] = [];
+  let colX = CANVAS_PADDING;
 
   for (const folder of sortedFolders) {
     const folderNodes = folders.get(folder)!;
-    // Sort by complexity desc within folder
     folderNodes.sort((a, b) => b.data.metrics.complexity - a.data.metrics.complexity);
 
+    const groupId = `__group__${folder}`;
+    const groupW = NODE_W + GROUP_PADDING_X * 2;
+    const groupH = GROUP_PADDING_TOP + folderNodes.length * (NODE_H + ROW_GAP) - ROW_GAP + GROUP_PADDING_BOTTOM;
+
+    groupNodes.push({
+      id: groupId,
+      type: "folderGroup",
+      position: { x: colX, y: CANVAS_PADDING },
+      style: { width: groupW, height: groupH },
+      data: { label: folder === "." ? "(root)" : folder, fileCount: folderNodes.length },
+      draggable: true,
+    });
+
     folderNodes.forEach((node, rowIdx) => {
-      positioned.push({
+      fileNodes.push({
         ...node,
+        // Position is relative to parent group
         position: {
-          x: colX,
-          y: PADDING + rowIdx * (NODE_H + ROW_GAP),
+          x: GROUP_PADDING_X,
+          y: GROUP_PADDING_TOP + rowIdx * (NODE_H + ROW_GAP),
         },
+        // @ts-ignore - parentNode is valid React Flow prop
+        parentNode: groupId,
+        extent: "parent" as const,
       });
     });
 
-    colX += NODE_W + COL_GAP;
+    colX += groupW + COL_GAP;
   }
 
-  return positioned;
+  return { fileNodes, groupNodes };
 }
 
 /** Color per language */
@@ -94,4 +127,13 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Folder group accent colors - cycles through these */
+const FOLDER_COLORS = [
+  "#4a9eff", "#39d0d8", "#3fb950", "#bc8cff",
+  "#f0883e", "#f0d060", "#f85149", "#d29922",
+];
+export function folderColor(index: number): string {
+  return FOLDER_COLORS[index % FOLDER_COLORS.length];
 }
