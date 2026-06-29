@@ -8,6 +8,8 @@ import ReactFlow, {
   useEdgesState,
   Node,
   Edge,
+  useReactFlow,
+  ReactFlowProvider,
 } from "reactflow";
 import "reactflow/dist/style.css";
 
@@ -30,19 +32,25 @@ function labelToIndex(label: string): number {
   return hash % 8;
 }
 
-export default function App() {
+// Inner component that can use useReactFlow hook
+function AppInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [allNodes, setAllNodes] = useState<Node[]>([]);
+  const [allEdges, setAllEdges] = useState<Edge[]>([]);
   const [selectedNode, setSelectedNode] = useState<{ id: string; data: FileNodeData } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<GraphData["meta"] | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const repoRoot = useRef<string>("");
+  const { getNodes, fitView } = useReactFlow();
 
   const handleAnalyze = useCallback(async (path: string) => {
     setLoading(true);
     setError(null);
     setSelectedNode(null);
+    setSearchQuery("");
     repoRoot.current = path;
 
     try {
@@ -55,15 +63,12 @@ export default function App() {
 
       if (data.nodes.length === 0) {
         setError("No supported source files found in this directory.");
-        setNodes([]);
-        setEdges([]);
-        setMeta(null);
+        setNodes([]); setEdges([]); setAllNodes([]); setAllEdges([]); setMeta(null);
         return;
       }
 
       const { fileNodes, groupNodes } = computeLayout(data.nodes, data.edges);
 
-      // Group nodes first (rendered behind file nodes)
       const rfGroupNodes: Node[] = groupNodes.map((g) => ({
         id: g.id,
         type: "folderGroup",
@@ -75,7 +80,6 @@ export default function App() {
         zIndex: 0,
       }));
 
-      // File nodes — children of their group
       const rfFileNodes: Node<FileNodeData>[] = fileNodes.map((n: GNode) => ({
         id: n.id,
         type: "codeNode",
@@ -97,8 +101,13 @@ export default function App() {
         style: { stroke: "#4a9eff60", strokeWidth: 1.5 },
       }));
 
-      setNodes([...rfGroupNodes, ...rfFileNodes]);
-      setEdges(rfEdges);
+      const allN = [...rfGroupNodes, ...rfFileNodes];
+      const allE = rfEdges;
+
+      setAllNodes(allN);
+      setAllEdges(allE);
+      setNodes(allN);
+      setEdges(allE);
       setMeta(data.meta);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -107,6 +116,89 @@ export default function App() {
     }
   }, [setNodes, setEdges]);
 
+  // ── Search ────────────────────────────────────────────────────────────────
+  const handleSearch = useCallback((query: string) => {
+    setSearchQuery(query);
+
+    if (!query.trim()) {
+      // Restore all nodes at full opacity
+      setNodes(allNodes.map(n => ({ ...n, style: { ...n.style, opacity: 1 } })));
+      setEdges(allEdges.map(e => ({ ...e, style: { ...e.style, stroke: "#4a9eff60", opacity: 1 } })));
+      return;
+    }
+
+    const q = query.toLowerCase();
+    const matchingIds = new Set<string>();
+
+    allNodes.forEach(n => {
+      if (n.type !== "codeNode") return;
+      const d = n.data as FileNodeData;
+      if (d.label.toLowerCase().includes(q) || d.path.toLowerCase().includes(q)) {
+        matchingIds.add(n.id);
+      }
+    });
+
+    // Also keep parent group nodes of matched files visible
+    const matchingGroups = new Set<string>();
+    allNodes.forEach(n => {
+      if (n.type === "codeNode" && matchingIds.has(n.id)) {
+        // @ts-ignore
+        if (n.parentNode) matchingGroups.add(n.parentNode);
+      }
+    });
+
+    setNodes(allNodes.map(n => {
+      if (n.type === "folderGroup") {
+        return { ...n, style: { ...n.style, opacity: matchingGroups.has(n.id) ? 1 : 0.15 } };
+      }
+      const matches = matchingIds.has(n.id);
+      return { ...n, style: { ...n.style, opacity: matches ? 1 : 0.12 } };
+    }));
+
+    setEdges(allEdges.map(e => ({
+      ...e,
+      style: {
+        ...e.style,
+        stroke: matchingIds.has(e.source) && matchingIds.has(e.target) ? "#4a9eff" : "#4a9eff15",
+        opacity: matchingIds.has(e.source) && matchingIds.has(e.target) ? 1 : 0.2,
+      },
+    })));
+  }, [allNodes, allEdges, setNodes, setEdges]);
+
+  // ── Export PNG ────────────────────────────────────────────────────────────
+  const handleExport = useCallback(async () => {
+    // Dynamically import html-to-image only when needed
+    try {
+      const { toPng } = await import("html-to-image");
+      const viewport = document.querySelector(".react-flow__viewport") as HTMLElement;
+      if (!viewport) return;
+
+      // Temporarily remove opacity for clean export
+      const rfWrapper = document.querySelector(".react-flow") as HTMLElement;
+
+      const dataUrl = await toPng(rfWrapper, {
+        backgroundColor: "#080b0f",
+        pixelRatio: 2,
+        filter: (node) => {
+          // Exclude controls and minimap from export
+          if (node.classList?.contains("react-flow__controls")) return false;
+          if (node.classList?.contains("react-flow__minimap")) return false;
+          if (node.classList?.contains("react-flow__panel")) return false;
+          return true;
+        },
+      });
+
+      const link = document.createElement("a");
+      link.download = `${meta?.name ?? "codemap"}-graph.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch (err) {
+      console.error("Export failed:", err);
+      alert("Export failed. Make sure html-to-image is installed:\nnpm install html-to-image");
+    }
+  }, [meta]);
+
+  // ── Node click ────────────────────────────────────────────────────────────
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
       if (node.type !== "codeNode") return;
@@ -117,12 +209,7 @@ export default function App() {
           ...e,
           animated: e.source === node.id || e.target === node.id,
           style: {
-            stroke:
-              e.source === node.id
-                ? langColor(fileData.language)
-                : e.target === node.id
-                ? "#39d0d8"
-                : "#4a9eff20",
+            stroke: e.source === node.id ? langColor(fileData.language) : e.target === node.id ? "#39d0d8" : "#4a9eff20",
             strokeWidth: e.source === node.id || e.target === node.id ? 2 : 1,
           },
         }))
@@ -134,11 +221,7 @@ export default function App() {
   const handlePaneClick = useCallback(() => {
     setSelectedNode(null);
     setEdges((eds) =>
-      eds.map((e) => ({
-        ...e,
-        animated: false,
-        style: { stroke: "#4a9eff60", strokeWidth: 1.5 },
-      }))
+      eds.map((e) => ({ ...e, animated: false, style: { stroke: "#4a9eff60", strokeWidth: 1.5 } }))
     );
   }, [setEdges]);
 
@@ -146,18 +229,40 @@ export default function App() {
 
   return (
     <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column" }}>
-      <Toolbar onAnalyze={handleAnalyze} loading={loading} error={error} meta={meta} />
+      <Toolbar
+        onAnalyze={handleAnalyze}
+        onSearch={handleSearch}
+        onExport={handleExport}
+        loading={loading}
+        error={error}
+        meta={meta}
+        searchQuery={searchQuery}
+      />
 
       <div
         style={{
-          flex: 1,
-          marginTop: "56px",
+          flex: 1, marginTop: "56px",
           marginRight: panelOpen ? "360px" : "0",
           transition: "margin-right 0.25s ease",
           position: "relative",
         }}
       >
         {nodes.length === 0 && !loading && <EmptyState />}
+
+        {/* Search result count */}
+        {searchQuery && (
+          <div
+            style={{
+              position: "absolute", top: "16px", right: "16px", zIndex: 10,
+              background: "#161b22", border: "1px solid #4a9eff40",
+              borderRadius: "8px", padding: "6px 12px",
+              fontSize: "11px", fontFamily: "var(--font-mono)", color: "#4a9eff",
+              pointerEvents: "none",
+            }}
+          >
+            {nodes.filter(n => n.type === "codeNode" && (n.style?.opacity ?? 1) > 0.5).length} matches for "{searchQuery}"
+          </div>
+        )}
 
         <ReactFlow
           nodes={nodes}
@@ -178,9 +283,7 @@ export default function App() {
           <MiniMap
             position="bottom-right"
             nodeColor={(n: Node) => {
-              if (n.type === "folderGroup") {
-                return folderColor(labelToIndex(n.data?.label ?? ""));
-              }
+              if (n.type === "folderGroup") return folderColor(labelToIndex(n.data?.label ?? ""));
               const d = n.data as FileNodeData;
               return d ? langColor(d.language) : "#484f58";
             }}
@@ -193,29 +296,15 @@ export default function App() {
         {nodes.length > 0 && (
           <div
             style={{
-              position: "absolute",
-              top: "16px",
-              left: "16px",
-              background: "#0d111790",
-              backdropFilter: "blur(8px)",
-              border: "1px solid #21262d",
-              borderRadius: "8px",
-              padding: "10px 14px",
-              fontSize: "10px",
-              fontFamily: "var(--font-mono)",
-              color: "#484f58",
-              pointerEvents: "none",
+              position: "absolute", top: "16px", left: "16px",
+              background: "#0d111790", backdropFilter: "blur(8px)",
+              border: "1px solid #21262d", borderRadius: "8px",
+              padding: "10px 14px", fontSize: "10px",
+              fontFamily: "var(--font-mono)", color: "#484f58", pointerEvents: "none",
             }}
           >
-            <div style={{ marginBottom: "6px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-              Complexity
-            </div>
-            {[
-              { label: "Low (≤5)", c: 3 },
-              { label: "Medium (≤15)", c: 10 },
-              { label: "High (≤30)", c: 20 },
-              { label: "Critical (>30)", c: 40 },
-            ].map(({ label, c }) => (
+            <div style={{ marginBottom: "6px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Complexity</div>
+            {[{ label: "Low (≤5)", c: 3 }, { label: "Medium (≤15)", c: 10 }, { label: "High (≤30)", c: 20 }, { label: "Critical (>30)", c: 40 }].map(({ label, c }) => (
               <div key={label} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "3px" }}>
                 <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: complexityColor(c), flexShrink: 0 }} />
                 <span>{label}</span>
@@ -230,15 +319,17 @@ export default function App() {
         repoRoot={repoRoot.current}
         onClose={() => {
           setSelectedNode(null);
-          setEdges((eds) =>
-            eds.map((e) => ({
-              ...e,
-              animated: false,
-              style: { stroke: "#4a9eff60", strokeWidth: 1.5 },
-            }))
-          );
+          setEdges((eds) => eds.map((e) => ({ ...e, animated: false, style: { stroke: "#4a9eff60", strokeWidth: 1.5 } })));
         }}
       />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ReactFlowProvider>
+      <AppInner />
+    </ReactFlowProvider>
   );
 }
