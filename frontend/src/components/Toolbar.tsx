@@ -70,7 +70,7 @@ export function Toolbar({ onAnalyze, onSearch, onExport, loading, error, meta, s
           <input
             value={path}
             onChange={(e) => setPath(e.target.value)}
-            placeholder="/absolute/path/to/repo  or  D:/path/to/repo"
+            placeholder="/absolute/path/to/repo"
             style={{
               background: "none", border: "none", outline: "none",
               color: "#e6edf3", fontSize: "12px", fontFamily: "var(--font-mono)", flex: 1, minWidth: 0,

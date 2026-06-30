@@ -208,7 +208,7 @@ export function SidePanel({ node, repoRoot, onClose }: SidePanelProps) {
               }}
             >
               <Loader size={13} style={{ animation: "spin 1s linear infinite" }} />
-              <span>Analyzing with Claude…</span>
+              <span>Generating AI Summary...</span>
             </div>
           )}
 
@@ -226,7 +226,7 @@ export function SidePanel({ node, repoRoot, onClose }: SidePanelProps) {
             >
               <strong>Error:</strong> {summaryError}
               <br />
-              <span style={{ color: "#8b949e" }}>Is ANTHROPIC_API_KEY set?</span>
+              <span style={{ color: "#8b949e" }}>Is GEMINI_API_KEY set?</span>
             </div>
           )}
 
